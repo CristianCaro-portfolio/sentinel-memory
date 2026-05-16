@@ -18,5 +18,33 @@ services:
       timeout: 3s
       retries: 5
 
+  api:
+    build: .
+    image: sentinel-api:v2
+    container_name: sentinel_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: sentinel
+      DB_USER: sentinel_user
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-sentinel_password}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/code/app:ro
+      - ./scripts:/code/scripts:ro
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    healthcheck:
+      # start_period: 60s because the first embedding-model load takes ~10–20s
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
 volumes:
   postgres_data:

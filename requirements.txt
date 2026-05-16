@@ -1,0 +1,6 @@
+fastapi>=0.115.0,<0.120
+uvicorn[standard]>=0.32.0,<0.34
+psycopg2-binary>=2.9.10,<3
+pgvector>=0.3.0,<0.4
+sentence-transformers>=3.0.0,<4
+pydantic>=2.9.0,<3

@@ -9,4 +9,7 @@ __pycache__/
 *.log
 docs/
 tests/
+data/
+workers/
+db-init/
 README.md

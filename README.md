@@ -13,11 +13,47 @@ and immutable audit log — all on a single **Postgres + pgvector** substrate.
 
 ```bash
 cp .env.example .env
-docker compose up -d
+docker compose up -d --build
+```
+
+This brings up two containers:
+
+| Container           | Role                                                  | Port |
+| ------------------- | ----------------------------------------------------- | ---- |
+| `sentinel_postgres` | Postgres 16 with the `pgvector` extension preloaded   | 5432 |
+| `sentinel_api`      | FastAPI service exposing RAG + semantic-transactional join | 8000 |
+
+The API image pre-bakes the `all-MiniLM-L6-v2` model, so the first
+`docker compose build` takes a few minutes but every subsequent start
+is fast and works offline.
+
+### One-time: embed the seed data
+
+The seed rows (alerts and playbook chunks) ship with `embedding IS NULL`.
+Generate the vectors once:
+
+```bash
+docker exec -it sentinel_api python scripts/embed_seed.py
+```
+
+Expected output:
+
+```
+[embed_seed] loading model: sentence-transformers/all-MiniLM-L6-v2
+[embed_seed] 4 playbook chunks to embed
+[embed_seed] 6 alerts to embed
+[embed_seed] done
+```
+
+---
+
+## Verifying the database
+
+```bash
 docker exec -it sentinel_postgres psql -U sentinel_user -d sentinel
 ```
 
-Once inside `psql`, verify the stack is healthy:
+Then, inside `psql`:
 
 ```sql
 -- pgvector is installed
@@ -47,6 +83,60 @@ If both statements raise an exception, immutability is wired correctly.
 
 ---
 
+## Using the API
+
+Open the auto-generated docs: <http://localhost:8000/docs>.
+
+### Health
+
+```bash
+curl -s http://localhost:8000/health
+# {"status":"ok"}
+```
+
+### `POST /search/playbooks` — pure RAG
+
+Retrieves the most semantically similar remediation chunks.
+
+```bash
+curl -s -X POST http://localhost:8000/search/playbooks \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"Multiple failed SSH logins from a single IP","limit":2}'
+```
+
+### `POST /search/similar-incidents` — semantic-transactional join
+
+This is the headline pattern: **vector similarity + SQL filters in one
+query, one transaction, one execution plan.** A two-engine stack
+(Postgres + a separate vector DB) needs two round-trips and loses
+atomicity and precision.
+
+```bash
+curl -s -X POST http://localhost:8000/search/similar-incidents \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "query": "SSH brute force attempt",
+        "severities": ["high","critical"],
+        "hours_back": 24,
+        "limit": 3
+      }'
+```
+
+The query that runs under the hood:
+
+```sql
+SELECT alert_id, severity, category, source_ip, raw_text, detected_at,
+       embedding <=> $1::vector AS distance   -- semantic ranking
+FROM alerts
+WHERE embedding IS NOT NULL
+  AND severity = ANY($2::text[])              -- transactional filter
+  AND detected_at >= $3                       -- transactional filter
+ORDER BY embedding <=> $1::vector
+LIMIT $4;
+```
+
+---
+
 ## Architecture
 
 - High-level container diagram: [`docs/architecture/c4-container.mmd`](docs/architecture/c4-container.mmd)
@@ -72,13 +162,21 @@ sentinel-memory/
 │   ├── adr/                       # Architecture Decision Records
 │   └── architecture/              # C4 diagrams (Mermaid + rendered SVG)
 ├── db-init/                       # SQL bootstrap (extensions, schema, seed)
-├── app/                           # FastAPI service (Act 2+)
+├── app/                           # FastAPI service
+│   ├── main.py                    # endpoints + Pydantic models + lifespan
+│   └── memory/
+│       ├── db.py                  # psycopg2 pool + pgvector type registration
+│       └── retrieval.py           # RAG and semantic-transactional join queries
+├── scripts/
+│   └── embed_seed.py              # one-shot job to embed the seed rows
 ├── workers/                       # Embedding worker (Act 4)
 ├── data/
 │   ├── findings_sample.jsonl      # Simulated CDC feed (Act 4)
 │   └── playbooks/                 # Markdown corpus for RAG
 ├── tests/
 ├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
 ├── .env.example
 ├── .dockerignore
 └── README.md
@@ -90,7 +188,7 @@ sentinel-memory/
 
 - [x] **Act 0** — Setup, ADR, schema design
 - [x] **Act 1** — Foundation (Postgres + pgvector + seed)
-- [ ] **Act 2** — FastAPI service: read paths
+- [x] **Act 2** — RAG + semantic-transactional join API
 - [ ] **Act 3** — Episodic + LTM memory APIs
 - [ ] **Act 4** — Embedding worker + CDC-style ingest
 - [ ] **Act 5** — Governance & observability hardening
