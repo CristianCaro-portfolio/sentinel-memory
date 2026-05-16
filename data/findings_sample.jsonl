@@ -1,0 +1,6 @@
+{"source_ip":"203.0.113.42","severity":"high","category":"authentication","raw_text":"SSH brute force: 47 failed logins for user \"admin\" in 4 minutes from 203.0.113.42"}
+{"source_ip":"198.51.100.7","severity":"critical","category":"exfiltration","raw_text":"Unusual outbound: 2.3GB transferred to unknown-host.cloud-eu.net over 12 minutes"}
+{"source_ip":"10.4.2.18","severity":"high","category":"execution","raw_text":"PowerShell launched with -EncodedCommand on workstation WS-FIN-042 by user jdoe"}
+{"source_ip":"10.4.2.18","severity":"medium","category":"execution","raw_text":"PowerShell Invoke-WebRequest from same workstation 3 minutes later"}
+{"source_ip":"45.33.12.99","severity":"low","category":"reconnaissance","raw_text":"Port scan detected: 1024 ports probed on edge-fw-01 in 30 seconds"}
+{"source_ip":"192.0.2.55","severity":"medium","category":"authentication","raw_text":"Successful login for user \"cfo\" from new geolocation (Lagos, NG)"}

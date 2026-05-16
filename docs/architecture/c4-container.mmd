@@ -1,0 +1,24 @@
+%% C4 Container diagram for sentinel-memory
+%% Render with: mmdc -i c4-container.mmd -o c4-container.svg
+flowchart TB
+    analyst([Security Analyst])
+
+    subgraph sentinel["sentinel-memory (system)"]
+        api["FastAPI Service<br/>(app/)<br/>RAG + memory APIs"]
+        worker["Embedding Worker<br/>(workers/)<br/>MiniLM-L6-v2"]
+        subgraph pg["Postgres 16 + pgvector"]
+            alerts[("alerts<br/>facts + vectors")]
+            pb[("playbook_chunks<br/>RAG corpus")]
+            epi[("episodic_memory<br/>session turns")]
+            ltm[("ltm<br/>analyst prefs")]
+            audit[("audit_log<br/>immutable")]
+        end
+    end
+
+    feed[/"findings_sample.jsonl<br/>(simulated CDC)"/]
+
+    analyst -- "HTTPS / chat" --> api
+    api -- "SQL + vector search" --> pg
+    api -- "writes" --> audit
+    worker -- "embeds rows<br/>(UPDATE ... SET embedding)" --> pg
+    feed -- "ingest" --> worker
