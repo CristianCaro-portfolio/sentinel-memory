@@ -25,6 +25,12 @@ BASE = os.environ.get("BASE_URL", "http://host.docker.internal:8000")
 OUT = Path(os.environ.get("OUT_DIR", "/out"))
 OUT.mkdir(parents=True, exist_ok=True)
 
+# Override the chat sample question via CHAT_PROMPT if you want a different demo.
+CHAT_PROMPT = os.environ.get(
+    "CHAT_PROMPT",
+    "Seeing 47 failed logins from a single IP. What now?",
+)
+
 
 async def main() -> None:
     async with async_playwright() as p:
@@ -49,13 +55,15 @@ async def main() -> None:
         await page.click('button.tab[data-tab="chat"]')
         await page.click("#chat-new")  # ensure a fresh, empty thread
         await page.wait_for_timeout(300)
-        await page.fill("#chat-input", "47 logins fallidos desde una sola IP. ¿Qué hago?")
+        await page.fill("#chat-input", CHAT_PROMPT)
         await page.click('#chat-form button[type="submit"]')
         await page.wait_for_selector(".turn.assistant .bubble", timeout=40000)
         await page.wait_for_selector(".turn.assistant .citation", timeout=10000)
         # Scroll the thread to top so the user turn + start of the reply are visible
         await page.evaluate("document.querySelector('#chat-thread').scrollTop = 0")
-        await page.wait_for_timeout(800)
+        # Hide any lingering toast so the shot is clean
+        await page.evaluate("document.querySelector('#toast').classList.add('hidden')")
+        await page.wait_for_timeout(400)
         await page.screenshot(path=str(OUT / "01-chat.png"), full_page=False)
 
         # 2. SEARCH — run a query in each column
