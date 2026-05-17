@@ -1,13 +1,15 @@
-"""sentinel-memory API — Act 3: chat with episodic memory + LTM."""
+"""sentinel-memory API — Act 5: embedded governance, RBAC and living index."""
 import json
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from app.governance import audit, rbac
 from app.llm import claude
 from app.memory import db, episodic, ltm, retrieval
 
@@ -20,7 +22,7 @@ async def lifespan(app: FastAPI):
     db.close_pool()
 
 
-app = FastAPI(title="sentinel-memory", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="sentinel-memory", version="0.5.0", lifespan=lifespan)
 
 
 class PlaybookQuery(BaseModel):
@@ -62,6 +64,16 @@ class AlertPatch(BaseModel):
     severity: Optional[str] = None
 
 
+class FeedbackIn(BaseModel):
+    analyst_id: str
+    session_id: Optional[str] = None
+    turn_id: Optional[int] = None
+    target_kind: str = Field(..., examples=["playbook_chunk"])
+    target_id: str
+    rating: int = Field(..., ge=-1, le=1)
+    note: Optional[str] = None
+
+
 def _build_system_prompt(prefs, playbook_hits, alert_hits) -> str:
     parts = [
         "You are an AI assistant supporting a security analyst.",
@@ -95,12 +107,18 @@ def health():
 
 
 @app.post("/search/playbooks")
-def post_search_playbooks(req: PlaybookQuery):
+def post_search_playbooks(
+    req: PlaybookQuery,
+    _: dict = Depends(rbac.require_permission("search")),
+):
     return {"results": retrieval.search_playbooks(req.query, limit=req.limit)}
 
 
 @app.post("/search/similar-incidents")
-def post_search_incidents(req: IncidentQuery):
+def post_search_incidents(
+    req: IncidentQuery,
+    _: dict = Depends(rbac.require_permission("search")),
+):
     since = None
     if req.hours_back:
         since = datetime.now(timezone.utc) - timedelta(hours=req.hours_back)
@@ -112,7 +130,11 @@ def post_search_incidents(req: IncidentQuery):
 
 
 @app.post("/chat")
-def post_chat(req: ChatRequest):
+def post_chat(
+    req: ChatRequest,
+    _: dict = Depends(rbac.require_permission("chat")),
+):
+    t0 = time.time()
     session_id = req.session_id or str(uuid.uuid4())
 
     prefs = ltm.get_ltm(req.analyst_id)
@@ -141,7 +163,7 @@ def post_chat(req: ChatRequest):
     reply = claude.complete(system_prompt, messages, max_tokens=1024)
 
     reply_vec = retrieval.embed(reply)
-    episodic.record_turn(
+    assistant_turn_id = episodic.record_turn(
         session_id, req.analyst_id, "assistant", reply,
         embedding=reply_vec,
         metadata={
@@ -153,8 +175,21 @@ def post_chat(req: ChatRequest):
     if severity_filter:
         ltm.touch_ltm(req.analyst_id, ["severity_filter"])
 
+    latency_ms = int((time.time() - t0) * 1000)
+    audit.log_audit(
+        principal=req.analyst_id,
+        operation="chat",
+        query_text=req.message,
+        retrieved_ids=[h["chunk_id"] for h in playbook_hits]
+        + [h["alert_id"] for h in alert_hits],
+        granted=True,
+        latency_ms=latency_ms,
+        metadata={"session_id": session_id, "turn_id": assistant_turn_id},
+    )
+
     return {
         "session_id": session_id,
+        "turn_id": assistant_turn_id,
         "reply": reply,
         "citations": {
             "playbooks": [
@@ -162,6 +197,8 @@ def post_chat(req: ChatRequest):
                     "id": h["chunk_id"],
                     "title": h["title"],
                     "playbook_id": h["playbook_id"],
+                    "final_score": h["final_score"],
+                    "n_ratings": h["n_ratings"],
                 }
                 for h in playbook_hits
             ],
@@ -170,11 +207,14 @@ def post_chat(req: ChatRequest):
                     "id": h["alert_id"],
                     "severity": h["severity"],
                     "summary": h["raw_text"][:80],
+                    "final_score": h["final_score"],
+                    "n_ratings": h["n_ratings"],
                 }
                 for h in alert_hits
             ],
         },
         "applied_preferences": prefs,
+        "latency_ms": latency_ms,
     }
 
 
@@ -195,7 +235,10 @@ def post_preferences(analyst_id: str, req: LtmUpsert):
 
 
 @app.post("/alerts")
-def post_alert(req: AlertCreate):
+def post_alert(
+    req: AlertCreate,
+    _: dict = Depends(rbac.require_permission("create_alert")),
+):
     """Insert an alert. The NOTIFY trigger wakes the worker so it embeds the row."""
     with retrieval.cursor() as cur:
         cur.execute(
@@ -211,7 +254,11 @@ def post_alert(req: AlertCreate):
 
 
 @app.patch("/alerts/{alert_id}")
-def patch_alert(alert_id: str, req: AlertPatch):
+def patch_alert(
+    alert_id: str,
+    req: AlertPatch,
+    _: dict = Depends(rbac.require_permission("patch_alert")),
+):
     """Update status or severity. The trigger captures the previous version into alerts_history."""
     sets, params = [], []
     if req.status is not None:
@@ -301,6 +348,85 @@ def get_alert_history(alert_id: str):
                 "valid_from": r[2].isoformat(),
                 "valid_to": r[3].isoformat() if r[3] else None,
                 "source": r[4],
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.post("/feedback")
+def post_feedback(
+    req: FeedbackIn,
+    _: dict = Depends(rbac.require_permission("submit_feedback")),
+):
+    """Record an analyst rating that feeds back into ``final_score``."""
+    with retrieval.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO feedback
+              (analyst_id, session_id, turn_id, target_kind, target_id, rating, note)
+            VALUES (%s, %s, %s, %s, %s::uuid, %s, %s)
+            RETURNING feedback_id;
+            """,
+            (
+                req.analyst_id,
+                req.session_id,
+                req.turn_id,
+                req.target_kind,
+                req.target_id,
+                req.rating,
+                req.note,
+            ),
+        )
+        fid = cur.fetchone()[0]
+    audit.log_audit(
+        principal=req.analyst_id,
+        operation="submit_feedback",
+        query_text=None,
+        retrieved_ids=[req.target_id],
+        granted=True,
+        metadata={
+            "rating": req.rating,
+            "kind": req.target_kind,
+            "feedback_id": fid,
+        },
+    )
+    return {"feedback_id": fid, "status": "recorded"}
+
+
+@app.get("/audit")
+def get_audit(
+    limit: int = 20,
+    _: dict = Depends(rbac.require_permission("read_audit")),
+):
+    """Read the most recent audit events (paged by ``limit``)."""
+    with retrieval.cursor() as cur:
+        # Cast retrieved_ids to text[] so psycopg2 unpacks it into a Python list.
+        # (uuid[] decoding is shadowed by the pgvector type registration in this pool.)
+        cur.execute(
+            """
+            SELECT event_id, occurred_at, principal, operation,
+                   query_text, retrieved_ids::text[],
+                   granted, latency_ms, metadata
+            FROM audit_log
+            ORDER BY event_id DESC
+            LIMIT %s;
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+    return {
+        "events": [
+            {
+                "event_id": r[0],
+                "occurred_at": r[1].isoformat(),
+                "principal": r[2],
+                "operation": r[3],
+                "query": r[4],
+                "retrieved_ids": list(r[5] or []),
+                "granted": r[6],
+                "latency_ms": r[7],
+                "metadata": r[8],
             }
             for r in rows
         ]

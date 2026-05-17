@@ -304,6 +304,86 @@ cannot bypass.
 
 ---
 
+## Governance: audit + RBAC + living index (Act 5)
+
+This is the layer that takes the project from "prototype" to "consumable
+by an organisation".
+
+| Capability | Where it lives |
+| --- | --- |
+| **Universal audit log** | `app/governance/audit.py` — one helper, called on every gated handler. Rows go to the immutable `audit_log` table. |
+| **Role-based access control** | `app/governance/rbac.py` — the analyst role lives in LTM, a FastAPI dependency enforces it. |
+| **Living index** | `feedback` table + `feedback_scores` view + hybrid scoring in `app/memory/retrieval.py` (`final_score = distance − feedback_weight × avg_rating`). |
+
+All write paths now require the `X-Analyst-Id` header. Role permissions:
+
+| Role | Permissions |
+| --- | --- |
+| `auditor` | `read_audit` |
+| `analyst` | `chat`, `search`, `create_alert`, `patch_alert`, `submit_feedback` |
+| `senior_analyst` | everything above + `read_audit` |
+
+Seed roles: `cristian` = `senior_analyst`, `audit_bot` = `auditor`.
+
+### Demo 1 — Universal audit log
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -H "X-Analyst-Id: cristian" \
+  -d '{"analyst_id":"cristian","message":"What should I do about a brute force?"}' \
+  | jq '{turn_id, latency_ms}'
+
+curl -s -H "X-Analyst-Id: cristian" 'http://localhost:8000/audit?limit=5' | jq
+```
+
+Every gated handler leaves `principal`, `operation`, `query_text`,
+`retrieved_ids`, `latency_ms` — regulatory traceability with a single
+helper, not boilerplate in every endpoint.
+
+### Demo 2 — RBAC blocks the auditor
+
+```bash
+# auditor can NOT chat
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -H "X-Analyst-Id: audit_bot" \
+  -d '{"analyst_id":"audit_bot","message":"hello"}'
+# → 403 {"detail":"role 'auditor' lacks permission 'chat'"}
+
+# but it CAN read the audit log
+curl -s -H "X-Analyst-Id: audit_bot" 'http://localhost:8000/audit?limit=3' | jq
+```
+
+### Demo 3 — Living index re-weights from analyst feedback
+
+```bash
+# Search before any feedback
+curl -s -X POST http://localhost:8000/search/playbooks \
+  -H "Content-Type: application/json" -H "X-Analyst-Id: cristian" \
+  -d '{"query":"SSH brute force","limit":3}' \
+  | jq '.results[] | {title, distance, feedback_score, final_score}'
+
+# Penalise an irrelevant chunk
+curl -s -X POST http://localhost:8000/feedback \
+  -H "Content-Type: application/json" -H "X-Analyst-Id: cristian" \
+  -d '{"analyst_id":"cristian","target_kind":"playbook_chunk",
+       "target_id":"<chunk_id>","rating":-1,
+       "note":"this is exfiltration, not brute force"}'
+
+# Re-search — distance is unchanged, final_score moved
+curl -s -X POST http://localhost:8000/search/playbooks \
+  -H "Content-Type: application/json" -H "X-Analyst-Id: cristian" \
+  -d '{"query":"SSH brute force","limit":3}' \
+  | jq '.results[] | {title, distance, feedback_score, final_score}'
+```
+
+The pure cosine `distance` does not change, but `feedback_score` falls
+to `−1.0` for the penalised row, and `final_score = distance − 0.2 ×
+feedback_score` moves it down the ranking. No retraining required.
+
+---
+
 ## Architecture
 
 - High-level container diagram: [`docs/architecture/c4-container.mmd`](docs/architecture/c4-container.mmd)
@@ -331,11 +411,14 @@ sentinel-memory/
 ├── db-init/                       # SQL bootstrap (extensions, schema, seed, temporal+CDC)
 ├── app/                           # FastAPI service
 │   ├── main.py                    # endpoints + Pydantic models + lifespan
+│   ├── governance/
+│   │   ├── audit.py               # immutable audit-log helper
+│   │   └── rbac.py                # role-based dependency
 │   ├── llm/
 │   │   └── claude.py              # thin wrapper around the Anthropic API
 │   └── memory/
 │       ├── db.py                  # psycopg2 pool + pgvector type registration
-│       ├── retrieval.py           # RAG and semantic-transactional join queries
+│       ├── retrieval.py           # hybrid scoring (vector + feedback) RAG queries
 │       ├── episodic.py            # per-session conversation turns
 │       └── ltm.py                 # long-term analyst preferences
 ├── scripts/
@@ -363,7 +446,7 @@ sentinel-memory/
 - [x] **Act 2** — RAG + semantic-transactional join API
 - [x] **Act 3** — Chat with episodic memory + LTM (Anthropic Claude)
 - [x] **Act 4** — Temporal consistency (SCD2) + CDC worker (LISTEN/NOTIFY)
-- [ ] **Act 5** — Governance & observability hardening
+- [x] **Act 5** — Embedded governance: audit + RBAC + living index
 
 ---
 

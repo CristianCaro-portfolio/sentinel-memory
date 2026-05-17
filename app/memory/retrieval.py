@@ -41,20 +41,33 @@ def cursor():
         db.release_conn(conn)
 
 
+# Living-index knob: weight given to analyst feedback (avg_rating in
+# [-1, 1]) relative to pure cosine distance when computing final_score.
+# 0.0 disables feedback; 0.5+ lets feedback dominate (risky with little
+# data); 0.2 is the working default.
+FEEDBACK_WEIGHT = 0.2
+
+
 def search_playbooks(query_text: str, limit: int = 3):
-    """Pure RAG: vector similarity over the playbook chunks."""
+    """Hybrid RAG: vector distance fused with analyst feedback (living index)."""
     qvec = embed(query_text)
     with cursor() as cur:
         cur.execute(
             """
-            SELECT chunk_id, playbook_id, chunk_index, title, content,
-                   embedding <=> %s::vector AS distance
-            FROM playbook_chunks
-            WHERE embedding IS NOT NULL
-            ORDER BY embedding <=> %s::vector
+            SELECT pc.chunk_id, pc.playbook_id, pc.chunk_index, pc.title, pc.content,
+                   (pc.embedding <=> %s::vector)              AS distance,
+                   COALESCE(fs.avg_rating, 0)::real           AS feedback_score,
+                   COALESCE(fs.n_ratings, 0)                  AS n_ratings,
+                   (pc.embedding <=> %s::vector)
+                     - (COALESCE(fs.avg_rating, 0)::real * %s) AS final_score
+            FROM playbook_chunks pc
+            LEFT JOIN feedback_scores fs
+              ON fs.target_kind = 'playbook_chunk' AND fs.target_id = pc.chunk_id
+            WHERE pc.embedding IS NOT NULL
+            ORDER BY final_score
             LIMIT %s;
             """,
-            (qvec, qvec, limit),
+            (qvec, qvec, FEEDBACK_WEIGHT, limit),
         )
         rows = cur.fetchall()
     return [
@@ -65,6 +78,9 @@ def search_playbooks(query_text: str, limit: int = 3):
             "title": r[3],
             "content": r[4],
             "distance": float(r[5]),
+            "feedback_score": float(r[6]),
+            "n_ratings": int(r[7]),
+            "final_score": float(r[8]),
         }
         for r in rows
     ]
@@ -77,30 +93,38 @@ def search_similar_alerts(
     limit: int = 5,
 ):
     """
-    Semantic-transactional join: vector similarity combined with SQL
-    filters in a single query. This is the headline pattern of
-    Chapter 3 — the one that disappears the moment vectors live in a
-    separate engine from the transactional facts.
+    Semantic-transactional join with living-index scoring.
+
+    Combines vector similarity, SQL filters (severity, time window) and
+    analyst feedback in a single query — still one transaction, one
+    execution plan. This is the headline pattern of Chapter 3 extended
+    with the feedback layer of Chapter 4.
     """
     qvec = embed(query_text)
     sql = """
-        SELECT alert_id, severity, category, source_ip::text,
-               raw_text, detected_at,
-               embedding <=> %s::vector AS distance
-        FROM alerts
-        WHERE embedding IS NOT NULL
+        SELECT a.alert_id, a.severity, a.category, a.source_ip::text,
+               a.raw_text, a.detected_at,
+               (a.embedding <=> %s::vector)              AS distance,
+               COALESCE(fs.avg_rating, 0)::real          AS feedback_score,
+               COALESCE(fs.n_ratings, 0)                 AS n_ratings,
+               (a.embedding <=> %s::vector)
+                 - (COALESCE(fs.avg_rating, 0)::real * %s) AS final_score
+        FROM alerts a
+        LEFT JOIN feedback_scores fs
+          ON fs.target_kind = 'alert' AND fs.target_id = a.alert_id
+        WHERE a.embedding IS NOT NULL
     """
-    params: list = [qvec]
+    params: list = [qvec, qvec, FEEDBACK_WEIGHT]
 
     if severities:
-        sql += " AND severity = ANY(%s)"
+        sql += " AND a.severity = ANY(%s)"
         params.append(severities)
     if since:
-        sql += " AND detected_at >= %s"
+        sql += " AND a.detected_at >= %s"
         params.append(since)
 
-    sql += " ORDER BY embedding <=> %s::vector LIMIT %s;"
-    params.extend([qvec, limit])
+    sql += " ORDER BY final_score LIMIT %s;"
+    params.append(limit)
 
     with cursor() as cur:
         cur.execute(sql, params)
@@ -114,6 +138,9 @@ def search_similar_alerts(
             "raw_text": r[4],
             "detected_at": r[5].isoformat(),
             "distance": float(r[6]),
+            "feedback_score": float(r[7]),
+            "n_ratings": int(r[8]),
+            "final_score": float(r[9]),
         }
         for r in rows
     ]
