@@ -20,7 +20,7 @@ services:
 
   api:
     build: .
-    image: sentinel-api:v2
+    image: sentinel-api:v3
     container_name: sentinel_api
     restart: unless-stopped
     depends_on:
@@ -47,6 +47,26 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
+
+  embedding_worker:
+    image: sentinel-api:v3
+    container_name: sentinel_worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: sentinel
+      DB_USER: sentinel_user
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-sentinel_password}
+    volumes:
+      - ./workers:/code/workers:ro
+    # -u disables stdout buffering so docker logs reflect events in real time
+    command: ["python", "-u", "workers/embedding_worker.py"]
 
 volumes:
   postgres_data:

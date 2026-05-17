@@ -19,6 +19,7 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 
 COPY ./app ./app
 COPY ./scripts ./scripts
+COPY ./workers ./workers
 
 EXPOSE 8000
 

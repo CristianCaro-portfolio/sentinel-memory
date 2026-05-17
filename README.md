@@ -216,6 +216,94 @@ restarts and is queryable.
 
 ---
 
+## Temporal consistency + CDC (Act 4)
+
+Two architecturally meaningful capabilities run on the same Postgres:
+
+| Capability | Pattern | Real-world use |
+| --- | --- | --- |
+| **Temporal consistency** | SCD2 + bitemporal lookup | "What did this alert look like when we decided to close it?" |
+| **CDC via LISTEN / NOTIFY** | Push, not polling | New alerts get embedded automatically without the API knowing the worker exists. |
+
+### How it is wired
+
+- `alerts_history` is an SCD2 table that the `capture_alert_change`
+  trigger fills on every meaningful UPDATE (`severity`, `status` or
+  `raw_text` change).
+- `notify_alert_needs_embedding` fires `pg_notify('alerts_changed', ...)`
+  on inserts/updates that leave `embedding IS NULL`.
+- `invalidate_embedding_on_text_change` drops the embedding whenever
+  `raw_text` is rewritten, which in turn fires the NOTIFY trigger and
+  the worker re-embeds the row.
+- `workers/embedding_worker.py` runs in its own container, does a
+  one-shot backfill on boot, then `LISTEN alerts_changed`. The API and
+  the worker never talk to each other directly — the only contract is
+  the Postgres channel and the `alerts.embedding` column.
+
+### Demo 1 — CDC: insert an alert, watch it embed itself
+
+In one terminal, tail the worker:
+
+```bash
+docker compose logs -f embedding_worker
+```
+
+In another, post a new alert:
+
+```bash
+curl -s -X POST http://localhost:8000/alerts \
+  -H "Content-Type: application/json" \
+  -d '{
+        "source_ip": "45.61.23.99",
+        "severity": "high",
+        "category": "reconnaissance",
+        "raw_text": "Nmap scan detected: 65000 ports probed across DMZ in 90 seconds from 45.61.23.99"
+      }' | jq
+```
+
+Within a second the worker logs:
+
+```
+[worker] NOTIFY received for <alert_id>
+[worker] embedded <alert_id>
+```
+
+The new row now shows up in semantic search without anyone touching the
+API or the worker manually:
+
+```bash
+curl -s -X POST http://localhost:8000/search/similar-incidents \
+  -H "Content-Type: application/json" \
+  -d '{"query":"port scanning my perimeter","limit":2}' | jq '.results[].raw_text'
+```
+
+### Demo 2 — Time travel for forensics
+
+```bash
+ALERT_ID=<the id you just created>
+T0=$(python3 -c "from datetime import datetime, timezone; print(datetime.now(timezone.utc).isoformat())")
+sleep 2
+
+curl -s -X PATCH http://localhost:8000/alerts/$ALERT_ID \
+  -H "Content-Type: application/json" \
+  -d '{"severity":"critical"}'
+
+sleep 2
+
+curl -s -X PATCH http://localhost:8000/alerts/$ALERT_ID \
+  -H "Content-Type: application/json" \
+  -d '{"status":"investigating"}'
+
+curl -s http://localhost:8000/alerts/$ALERT_ID/history | jq
+curl -s "http://localhost:8000/alerts/$ALERT_ID/as-of?at=${T0//+/%2B}" | jq
+```
+
+The `as-of` query returns the alert exactly as it existed at `T0`
+(`severity=high`, `status=open`) — backed by triggers the application
+cannot bypass.
+
+---
+
 ## Architecture
 
 - High-level container diagram: [`docs/architecture/c4-container.mmd`](docs/architecture/c4-container.mmd)
@@ -240,7 +328,7 @@ sentinel-memory/
 ├── docs/
 │   ├── adr/                       # Architecture Decision Records
 │   └── architecture/              # C4 diagrams (Mermaid + rendered SVG)
-├── db-init/                       # SQL bootstrap (extensions, schema, seed)
+├── db-init/                       # SQL bootstrap (extensions, schema, seed, temporal+CDC)
 ├── app/                           # FastAPI service
 │   ├── main.py                    # endpoints + Pydantic models + lifespan
 │   ├── llm/
@@ -252,9 +340,10 @@ sentinel-memory/
 │       └── ltm.py                 # long-term analyst preferences
 ├── scripts/
 │   └── embed_seed.py              # one-shot job to embed the seed rows
-├── workers/                       # Embedding worker (Act 4)
+├── workers/
+│   └── embedding_worker.py        # CDC consumer (LISTEN/NOTIFY) → backfill + embed-on-event
 ├── data/
-│   ├── findings_sample.jsonl      # Simulated CDC feed (Act 4)
+│   ├── findings_sample.jsonl      # Simulated CDC feed
 │   └── playbooks/                 # Markdown corpus for RAG
 ├── tests/
 ├── docker-compose.yml
@@ -273,7 +362,7 @@ sentinel-memory/
 - [x] **Act 1** — Foundation (Postgres + pgvector + seed)
 - [x] **Act 2** — RAG + semantic-transactional join API
 - [x] **Act 3** — Chat with episodic memory + LTM (Anthropic Claude)
-- [ ] **Act 4** — Embedding worker + CDC-style ingest
+- [x] **Act 4** — Temporal consistency (SCD2) + CDC worker (LISTEN/NOTIFY)
 - [ ] **Act 5** — Governance & observability hardening
 
 ---
