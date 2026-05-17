@@ -137,6 +137,85 @@ LIMIT $4;
 
 ---
 
+## Chat with memory (Act 3)
+
+The `/chat` endpoint closes the agentic loop:
+
+1. Loads the analyst's persistent preferences (LTM).
+2. Recovers the latest turns from the current session (episodic memory).
+3. Runs RAG over the playbook corpus.
+4. Runs the semantic-transactional join over alerts **filtered by the
+   analyst's LTM** (for example `severity_filter = ["high", "critical"]`).
+5. Calls Claude with all that context as the system prompt and the
+   session history as messages.
+6. Stores both the user message and the assistant reply, each with its
+   embedding, in `episodic_memory`.
+
+Requires `ANTHROPIC_API_KEY` in `.env`. Default model:
+`claude-haiku-4-5-20251001` (override with `CLAUDE_MODEL`).
+
+### Turn 1 — opening question
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+        "analyst_id": "cristian",
+        "message": "I am seeing 47 failed logins from a single IP in 4 minutes. What do I do?"
+      }' | jq
+```
+
+The response includes a fresh `session_id`, a reply that cites a
+playbook chunk such as `[PB-001-0]` and at least one `[alert:UUID8]`,
+and the `applied_preferences` block confirming the LTM that was loaded.
+
+### Turn 2 — the agent remembers
+
+Use the **same** `session_id` from turn 1:
+
+```bash
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+        "analyst_id": "cristian",
+        "session_id": "<paste session_id here>",
+        "message": "What if the IPs rotate? Same procedure?"
+      }' | jq
+```
+
+Claude resolves "the IPs" to the brute force from turn 1 without you
+repeating it. That is episodic memory working — and the difference
+between a stateless chatbot and an agent.
+
+### Turn 3 — modify LTM at runtime
+
+```bash
+curl -s -X POST http://localhost:8000/analyst/cristian/preferences \
+  -H "Content-Type: application/json" \
+  -d '{"key":"severity_filter","value":["critical"],"importance":0.95}'
+
+curl -s -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+        "analyst_id": "cristian",
+        "message": "Which incidents similar to data exfiltration happened recently?"
+      }' | jq '.citations.alerts'
+```
+
+Only `critical` alerts show up. The LTM changed retrieval behaviour
+without any code change in the agent.
+
+### Turn 4 — audit the whole session
+
+```bash
+curl -s http://localhost:8000/sessions/<session_id>/turns | jq '.turns[] | {role, content}'
+```
+
+Every turn is in the database with its embedding. Memory that survives
+restarts and is queryable.
+
+---
+
 ## Architecture
 
 - High-level container diagram: [`docs/architecture/c4-container.mmd`](docs/architecture/c4-container.mmd)
@@ -164,9 +243,13 @@ sentinel-memory/
 ├── db-init/                       # SQL bootstrap (extensions, schema, seed)
 ├── app/                           # FastAPI service
 │   ├── main.py                    # endpoints + Pydantic models + lifespan
+│   ├── llm/
+│   │   └── claude.py              # thin wrapper around the Anthropic API
 │   └── memory/
 │       ├── db.py                  # psycopg2 pool + pgvector type registration
-│       └── retrieval.py           # RAG and semantic-transactional join queries
+│       ├── retrieval.py           # RAG and semantic-transactional join queries
+│       ├── episodic.py            # per-session conversation turns
+│       └── ltm.py                 # long-term analyst preferences
 ├── scripts/
 │   └── embed_seed.py              # one-shot job to embed the seed rows
 ├── workers/                       # Embedding worker (Act 4)
@@ -189,7 +272,7 @@ sentinel-memory/
 - [x] **Act 0** — Setup, ADR, schema design
 - [x] **Act 1** — Foundation (Postgres + pgvector + seed)
 - [x] **Act 2** — RAG + semantic-transactional join API
-- [ ] **Act 3** — Episodic + LTM memory APIs
+- [x] **Act 3** — Chat with episodic memory + LTM (Anthropic Claude)
 - [ ] **Act 4** — Embedding worker + CDC-style ingest
 - [ ] **Act 5** — Governance & observability hardening
 
