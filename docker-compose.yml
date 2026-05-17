@@ -20,7 +20,7 @@ services:
 
   api:
     build: .
-    image: sentinel-api:v4
+    image: sentinel-api:v5
     container_name: sentinel_api
     restart: unless-stopped
     depends_on:
@@ -39,6 +39,7 @@ services:
     volumes:
       - ./app:/code/app:ro
       - ./scripts:/code/scripts:ro
+      - ./web:/code/web:ro
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     healthcheck:
       # start_period: 60s because the first embedding-model load takes ~10–20s
@@ -49,7 +50,7 @@ services:
       start_period: 60s
 
   embedding_worker:
-    image: sentinel-api:v4
+    image: sentinel-api:v5
     container_name: sentinel_worker
     restart: unless-stopped
     depends_on:

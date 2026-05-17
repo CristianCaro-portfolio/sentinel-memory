@@ -6,7 +6,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from pathlib import Path
+
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.governance import audit, rbac
@@ -22,7 +26,18 @@ async def lifespan(app: FastAPI):
     db.close_pool()
 
 
-app = FastAPI(title="sentinel-memory", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="sentinel-memory", version="0.6.0", lifespan=lifespan)
+
+
+# Static UI: served at /ui (the / root redirects to it for convenience).
+_WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+if _WEB_DIR.is_dir():
+    app.mount("/ui", StaticFiles(directory=str(_WEB_DIR), html=True), name="ui")
+
+
+@app.get("/", include_in_schema=False)
+def _root_redirect():
+    return RedirectResponse(url="/ui/")
 
 
 class PlaybookQuery(BaseModel):
@@ -225,13 +240,13 @@ def get_session_turns(session_id: str):
 
 @app.get("/analyst/{analyst_id}/preferences")
 def get_preferences(analyst_id: str):
-    return {"preferences": ltm.get_ltm(analyst_id)}
+    return {"preferences": ltm.list_ltm(analyst_id)}
 
 
 @app.post("/analyst/{analyst_id}/preferences")
 def post_preferences(analyst_id: str, req: LtmUpsert):
     ltm.upsert_ltm(analyst_id, req.key, req.value, req.importance)
-    return {"status": "ok", "preferences": ltm.get_ltm(analyst_id)}
+    return {"status": "ok", "preferences": ltm.list_ltm(analyst_id)}
 
 
 @app.post("/alerts")

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>sentinel-memory — analyst console</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-name">sentinel-memory</span>
+      <span class="brand-sub">analyst console</span>
+    </div>
+
+    <div class="who">
+      <label for="analyst-id" class="muted small">analyst</label>
+      <input id="analyst-id" type="text" value="cristian" autocomplete="off" />
+      <span id="role-badge" class="badge badge-role" title="resolved role">…</span>
+      <button id="refresh-role" class="ghost" title="refresh role + preferences">⟳</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab is-active" data-tab="chat">chat</button>
+    <button class="tab" data-tab="search">search</button>
+    <button class="tab" data-tab="alerts">alerts</button>
+    <button class="tab" data-tab="audit">audit log</button>
+    <button class="tab" data-tab="prefs">preferences</button>
+  </nav>
+
+  <main>
+    <!-- chat -->
+    <section class="panel" data-panel="chat">
+      <div class="panel-head">
+        <div>
+          <h2>chat with memory</h2>
+          <p class="muted">multi-turn conversation grounded by RAG, episodic memory and LTM.</p>
+        </div>
+        <div class="row">
+          <span class="muted small">session</span>
+          <code id="chat-session" class="mono small">—</code>
+          <button id="chat-new" class="ghost" title="new session">new session</button>
+        </div>
+      </div>
+
+      <div id="chat-thread" class="thread"></div>
+
+      <form id="chat-form" class="composer">
+        <textarea id="chat-input" placeholder="Ask the analyst agent… (Cmd/Ctrl+Enter to send)" rows="2"></textarea>
+        <button type="submit" class="primary">send</button>
+      </form>
+    </section>
+
+    <!-- search -->
+    <section class="panel hidden" data-panel="search">
+      <div class="panel-head">
+        <h2>retrieval</h2>
+        <p class="muted">vector search side-by-side over the playbook corpus and the alerts catalogue. Feedback re-weights the ranking live.</p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <header class="card-head">
+            <h3>playbooks <span class="muted small">RAG</span></h3>
+          </header>
+          <form id="search-pb-form" class="row gap">
+            <input id="search-pb-q" type="text" placeholder="someone hammering my SSH…" />
+            <input id="search-pb-limit" type="number" min="1" max="20" value="5" class="num" />
+            <button class="primary">search</button>
+          </form>
+          <div id="search-pb-results" class="results"></div>
+        </div>
+
+        <div class="card">
+          <header class="card-head">
+            <h3>similar incidents <span class="muted small">semantic + SQL</span></h3>
+          </header>
+          <form id="search-al-form" class="col gap">
+            <div class="row gap">
+              <input id="search-al-q" type="text" placeholder="data exfiltration to weird domain" />
+              <input id="search-al-limit" type="number" min="1" max="20" value="5" class="num" />
+              <button class="primary">search</button>
+            </div>
+            <div class="row gap wrap">
+              <span class="muted small">severity filter:</span>
+              <label class="pill"><input type="checkbox" value="critical" /> critical</label>
+              <label class="pill"><input type="checkbox" value="high" /> high</label>
+              <label class="pill"><input type="checkbox" value="medium" /> medium</label>
+              <label class="pill"><input type="checkbox" value="low" /> low</label>
+            </div>
+          </form>
+          <div id="search-al-results" class="results"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- alerts -->
+    <section class="panel hidden" data-panel="alerts">
+      <div class="panel-head">
+        <div>
+          <h2>alerts catalogue</h2>
+          <p class="muted">click an alert to view its SCD2 timeline. Use "as-of" to time-travel.</p>
+        </div>
+        <button id="alert-new" class="primary">+ new alert</button>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <header class="card-head"><h3>list</h3></header>
+          <div id="alerts-list" class="results"></div>
+        </div>
+
+        <div class="card">
+          <header class="card-head">
+            <h3 id="alert-detail-title">detail</h3>
+            <span id="alert-detail-id" class="muted small mono"></span>
+          </header>
+          <div id="alert-detail-body" class="results">
+            <p class="muted">select an alert on the left.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- audit -->
+    <section class="panel hidden" data-panel="audit">
+      <div class="panel-head">
+        <div>
+          <h2>audit log</h2>
+          <p class="muted">immutable record of every retrieval and write. Insert-only at the DB level.</p>
+        </div>
+        <button id="audit-refresh" class="ghost">⟳ refresh</button>
+      </div>
+      <div id="audit-table" class="results"></div>
+    </section>
+
+    <!-- preferences -->
+    <section class="panel hidden" data-panel="prefs">
+      <div class="panel-head">
+        <h2>preferences (LTM)</h2>
+        <p class="muted">long-term key/value store. <strong>severity_filter</strong> is injected automatically into hybrid search.</p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <header class="card-head"><h3>current</h3></header>
+          <div id="prefs-list" class="results"></div>
+        </div>
+        <div class="card">
+          <header class="card-head"><h3>upsert</h3></header>
+          <form id="prefs-form" class="col gap">
+            <label class="col gap-xs">
+              <span class="muted small">key</span>
+              <input id="pref-key" type="text" placeholder="severity_filter" />
+            </label>
+            <label class="col gap-xs">
+              <span class="muted small">value (JSON)</span>
+              <textarea id="pref-value" rows="3" placeholder='["high","critical"]'></textarea>
+            </label>
+            <label class="col gap-xs">
+              <span class="muted small">importance (0–1)</span>
+              <input id="pref-importance" type="number" min="0" max="1" step="0.05" value="0.5" />
+            </label>
+            <button class="primary">save</button>
+          </form>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- modal for creating an alert -->
+  <dialog id="new-alert-dlg">
+    <form id="new-alert-form" class="col gap" method="dialog">
+      <h3>create alert</h3>
+      <label class="col gap-xs">
+        <span class="muted small">source IP</span>
+        <input name="source_ip" type="text" required placeholder="45.61.23.99" />
+      </label>
+      <label class="col gap-xs">
+        <span class="muted small">severity</span>
+        <select name="severity">
+          <option>low</option><option>medium</option>
+          <option selected>high</option><option>critical</option>
+        </select>
+      </label>
+      <label class="col gap-xs">
+        <span class="muted small">category</span>
+        <input name="category" type="text" placeholder="reconnaissance" />
+      </label>
+      <label class="col gap-xs">
+        <span class="muted small">raw text</span>
+        <textarea name="raw_text" rows="3" required placeholder="Nmap scan: 65k ports probed across DMZ in 90s"></textarea>
+      </label>
+      <div class="row gap" style="justify-content:flex-end">
+        <button type="button" value="cancel" class="ghost" data-dlg-close>cancel</button>
+        <button type="submit" class="primary">create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

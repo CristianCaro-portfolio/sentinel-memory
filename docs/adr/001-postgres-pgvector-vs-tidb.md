@@ -10,18 +10,20 @@ The `sentinel-memory` project implements the memory layer of an agentic security
 analyst: alerts (transactional facts), vector embeddings (RAG + semantic memory),
 episodic memory, long-term memory (LTM) and an immutable audit log.
 
-The reference book (chapters 3 and 4) pushes hard for **TiDB** as the unified
-substrate for SQL + vectors + auditing, arguing that a distributed engine is
-the only one capable of supporting the "semantic-transactional join" pattern
-without operational friction.
+The reference book (chapters 3 and 4) makes a compelling case for **TiDB**
+as the unified substrate for SQL + vectors + auditing, arguing that a
+single ACID engine for facts and vectors is what makes patterns like the
+"semantic-transactional join" feasible without operational friction.
 
-Before adopting that recommendation we have to ask:
+The architectural thesis is sound. The remaining question is which engine
+best serves *this* project:
 
-- Is the architectural thesis ("one substrate, ACID, native vectors") specific
-  to TiDB, or is it satisfied by other engines?
-- Does the scope of this project (portfolio, local-first, fewer than 1M
-  vectors) justify a distributed engine?
-- What cost in *vendor lock-in* and cloud operations are we willing to pay?
+- Is the thesis ("one substrate, ACID, native vectors") satisfied by more
+  than one engine?
+- Does the scope (portfolio, local-first, fewer than 1M vectors) need a
+  distributed engine, or would a single-node store be enough?
+- What is the cost of operating a managed cloud cluster versus running
+  the same patterns locally?
 
 ## Decision
 
@@ -32,13 +34,14 @@ No second engine. No external vector DB. No managed cloud service.
 
 ## Rationale
 
-1. **Fulfils the book's thesis without locking us to a vendor.** Postgres +
-   pgvector unifies relational SQL and vector search in a single engine with
-   strict ACID. The important architectural claim — "avoid two engines you
-   have to keep in sync" — holds for any engine that combines both models,
-   not just TiDB.
-2. **Strict ACID, same as TiDB.** Postgres offers real serializable
-   transactions. At the target size there is no functional difference.
+1. **Same unified-substrate thesis, different engine.** Postgres +
+   pgvector combines relational SQL and vector search in a single engine
+   with strict ACID. The key architectural claim — "avoid two engines you
+   have to keep in sync" — holds for any engine that supports both, and
+   Postgres + pgvector is one of them.
+2. **Strict ACID, same guarantees that matter here.** Postgres offers
+   serializable transactions. At the project's target size there is no
+   functional gap with a distributed engine.
 3. **Operational maturity.** Postgres has decades of tooling: `pg_dump`,
    `pgbench`, physical and logical replication, extensions, mature
    observability. TiDB has less than a decade of broad production use.
@@ -75,13 +78,13 @@ No second engine. No external vector DB. No managed cloud service.
 
 ## Alternatives evaluated
 
-| Alternative | Why it was dropped |
+| Alternative | Why it was not selected for this project |
 | --- | --- |
-| **TiDB Cloud** | Commercial bias from the book; forces a cloud account; adds friction for reviewers; horizontal-scale advantages do not apply at this scope. |
-| **CockroachDB** | Overkill for a single-node local setup; same cluster friction without concrete benefits for fewer than 1M rows. |
-| **Postgres + Pinecone** | Breaks the *single-substrate* thesis: two engines to keep consistent, two APIs, extra synchronisation. Increases failure surface and cloud cost. |
-| **Postgres + Qdrant/Weaviate** | Same problem: two engines, two query languages. Loses the "semantic-transactional join" that is the central pattern of Ch. 3. |
-| **DuckDB + vector extension** | Excellent for analytics; not suitable as an OLTP system with concurrency or transactional immutable auditing. |
+| **TiDB Cloud** | Strong architectural fit; the horizontal-scale and global-replica advantages do not yet apply at the portfolio scope, and a managed cloud account adds friction for someone cloning the repo. A natural future migration target if the corpus outgrows a single node. |
+| **CockroachDB** | The single-node setup that fits this scope does not justify cluster operations; benefits appear with multi-region writes that are out of scope. |
+| **Postgres + Pinecone** | Breaks the *single-substrate* thesis: two engines to keep consistent, two APIs, extra synchronisation. Increases failure surface and adds cloud cost. |
+| **Postgres + Qdrant / Weaviate** | Same shape as Pinecone — two engines, two query languages. The "semantic-transactional join" that is the central pattern of Ch. 3 disappears. |
+| **DuckDB + vector extension** | Excellent for analytics; not designed as an OLTP system with concurrency or transactional immutable auditing. |
 
 ## Implementation notes
 
