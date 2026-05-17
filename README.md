@@ -55,12 +55,30 @@ Only the command differs.
 
 ---
 
+## Prerequisites
+
+- **Docker** and **Docker Compose** v2.
+- **Your own Anthropic API key.** The `/chat` endpoint calls Claude on
+  *your* account, so you need to generate a personal key at
+  [console.anthropic.com](https://console.anthropic.com/) → *Settings → API
+  Keys*. The free tier is enough to run the whole demo (the entire DEMO.md
+  flow consumes well under $0.05 with Haiku 4.5). The key is never
+  transmitted anywhere except to `api.anthropic.com` from your own machine.
+
+> Heads up: the project ships only with `.env.example`. The real `.env`
+> is gitignored on purpose so no one's key — mine or yours — ever ends
+> up in the repo. If you fork this and start hacking on it, do the same:
+> keep your `.env` local.
+
 ## Quick start
 
 ```bash
 git clone https://github.com/CristianCaro-portfolio/sentinel-memory.git
 cd sentinel-memory
-cp .env.example .env       # set POSTGRES_PASSWORD and ANTHROPIC_API_KEY
+cp .env.example .env
+# now open .env and replace the two placeholders:
+#   POSTGRES_PASSWORD   -> any string you like
+#   ANTHROPIC_API_KEY   -> sk-ant-... (from console.anthropic.com)
 docker compose up -d --build
 
 # embed the seed data (one-shot)
@@ -69,6 +87,11 @@ docker compose exec api python scripts/embed_seed.py
 # open the analyst console
 open http://localhost:8000/ui/
 ```
+
+Without a valid `ANTHROPIC_API_KEY`, every endpoint except `/chat` still
+works — retrieval, semantic-transactional join, alerts, audit and
+preferences are all self-contained on Postgres. Chat is the only flow
+that calls out to Claude.
 
 Other entry points:
 
