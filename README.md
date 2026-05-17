@@ -139,9 +139,7 @@ ranking. In a split stack (Postgres + Pinecone), the same pattern requires
 sentinel-memory/
 ├── docs/
 │   ├── adr/                        # architectural decisions
-│   ├── architecture/               # C4 diagrams
-│   ├── learning/                   # pedagogical Spanish doc (the one I read)
-│   └── marketing/                  # linkedin-carousel.md
+│   └── architecture/               # C4 diagrams
 ├── db-init/                        # SQL run on first up
 │   ├── 01_extensions.sql
 │   ├── 02_schema.sql               # the 5 tables

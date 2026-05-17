@@ -7,3 +7,8 @@ __pycache__/
 .idea/
 .vscode/
 *.swp
+
+# Private working docs (kept locally in ~/Downloads/sentinel-memory-private/).
+docs/learning/
+docs/marketing/
+scripts/build_learning_docx.py
