@@ -209,13 +209,6 @@ sentinel-memory/
 
 ---
 
-## About the author
-
-Cristian Caro — Data Engineer transitioning to Data Architect.
-
-This project is part of a 34-week structured learning plan I'm documenting
-on [LinkedIn](https://www.linkedin.com/in/cristiancaroocampo/).
-
 ## License
 
 MIT.
